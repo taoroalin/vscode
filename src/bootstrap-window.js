@@ -8,6 +8,8 @@
 //@ts-check
 'use strict';
 
+const purePrint = console.log;
+
 // Simple module style to support node.js and browser environments
 (function (globalThis, factory) {
 
@@ -18,6 +20,129 @@
 
 	// Browser
 	else {
+
+		const patchTimeout = true;
+		if (patchTimeout) {
+			const oldSetTimeout = window.setTimeout;
+			const oldClearTimeout = window.clearTimeout;
+			const timeoutGroups = {};
+			const lift = 1000;
+
+			let nstCalls = 0;
+			let ostCalls = 0;
+			let groupsScanned = 0;
+			setInterval(() => {
+				purePrint('pass through rate ' + ostCalls / nstCalls);
+				purePrint('avg scanned ' + groupsScanned / nstCalls);
+			}, 4000);
+			const newSetTimeout = (func, delay, ...args) => {
+				// console.warn(delay)
+				nstCalls++;
+				if (args.length < 0) {
+					console.error('timeout with args???');
+				}
+				const now = Date.now();
+				const triggerTime = delay + now;
+
+				for (let groupTimeString in timeoutGroups) {
+					groupsScanned++;
+					const group = timeoutGroups[groupTimeString];
+					const groupTime = group.time;
+					const groupLeft = groupTime - now;
+					const ratio = (10 + delay) / Math.abs(10 + groupLeft);
+					if (ratio < 1.7 && 0.7 < ratio) {
+						const id = group.handle * lift + group.funcs.length;
+						group.funcs.push(func);
+						return id;
+					}
+				}
+
+				const group = { funcs: [func], count: 1, time: triggerTime, handle: 0 };
+				const runTimeoutGroup = () => {
+					// console.log("run timeout group")
+					for (let func of group.funcs) {
+						if (func !== null) {
+							func();
+						}
+					}
+					delete timeoutGroups[group.handle];
+				};
+				ostCalls++;
+				group.handle = oldSetTimeout(runTimeoutGroup, delay);
+				timeoutGroups[group.handle] = group;
+				return group.handle * lift;
+			};
+			window.setTimeout = newSetTimeout;
+
+			const newClearTimeout = (handle) => {
+				if (typeof handle !== 'number') {
+					return;
+				}
+				const groupHandle = Math.round(handle / lift);
+				const funcIndex = handle % lift;
+				const group = timeoutGroups[groupHandle];
+				if (group === undefined || group.funcs.length - 1 < funcIndex || group.funcs[funcIndex] === null) {
+					return;
+				}
+				group.funcs[funcIndex] = null;
+				group.count--;
+				if (group.count === 0) {
+					oldClearTimeout(group.handle);
+					delete timeoutGroups[groupHandle];
+				}
+			};
+			window.clearTimeout = newClearTimeout;
+
+			if (window.requestIdleCallback) {
+				const oldRIC = window.requestIdleCallback;
+				const oldCIC = window.cancelIdleCallback;
+				let incId = 0;
+				let icFunctions = [];
+				let icCount = 0;
+				let idleCallback = undefined;
+				let idStart = 0;
+
+				const newRIC = (func, options) => {
+					if (options) {
+						console.log(options.timeout);
+					}
+					const id = incId;
+					incId++;
+					icFunctions.push(func);
+					icCount++;
+
+					if (idleCallback === undefined) {
+						idleCallback = oldRIC(() => {
+							idleCallback = undefined;
+
+							const oldIcFunctions = icFunctions;
+							idStart += oldIcFunctions.length;
+							icFunctions = [];
+							icCount = 0;
+							for (let func of oldIcFunctions) {
+								if (func) {
+									func();
+								}
+							}
+						});
+					}
+					return id;
+				};
+				window.requestIdleCallback = newRIC;
+
+				const newCIC = (handle) => {
+					if (icFunctions.length + idStart > handle) {
+						icFunctions[handle - idStart] = null;
+						icCount--;
+						if (icCount === 0) {
+							oldCIC(idleCallback); // cancelling might never be worth it?
+						}
+					}
+				};
+				window.cancelIdleCallback = newCIC;
+			}
+		}
+
 		globalThis.MonacoBootstrapWindow = factory();
 	}
 }(this, function () {
