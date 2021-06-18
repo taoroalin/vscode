@@ -8,8 +8,6 @@
 //@ts-check
 'use strict';
 
-const purePrint = console.log;
-
 // Simple module style to support node.js and browser environments
 (function (globalThis, factory) {
 
@@ -26,21 +24,23 @@ const purePrint = console.log;
 			const oldSetTimeout = window.setTimeout;
 			const oldClearTimeout = window.clearTimeout;
 			const timeoutGroups = {};
-			const lift = 1000;
+			const lift = 1024;
 
 			let nstCalls = 0;
 			let ostCalls = 0;
+			let cancels = 0;
 			let groupsScanned = 0;
+
+			// print diagnostics on what the patch is doing
 			setInterval(() => {
-				purePrint('pass through rate ' + ostCalls / nstCalls);
-				purePrint('avg scanned ' + groupsScanned / nstCalls);
+				// console.log('pass through rate ' + ostCalls / nstCalls);
+				// console.log('avg scanned ' + groupsScanned / nstCalls);
+				// console.log('cancel rate ' + cancels / nstCalls);
+				console.log(JSON.parse(JSON.stringify(timeoutGroups)));
 			}, 4000);
-			const newSetTimeout = (func, delay, ...args) => {
-				// console.warn(delay)
+
+			const newSetTimeout = (func, delay, /*doesn't support args at the moment*/) => {
 				nstCalls++;
-				if (args.length < 0) {
-					console.error('timeout with args???');
-				}
 				const now = Date.now();
 				const triggerTime = delay + now;
 
@@ -50,7 +50,7 @@ const purePrint = console.log;
 					const groupTime = group.time;
 					const groupLeft = groupTime - now;
 					const ratio = (10 + delay) / Math.abs(10 + groupLeft);
-					if (ratio < 1.7 && 0.7 < ratio) {
+					if (ratio < 2.5 && 0.7 < ratio) {
 						const id = group.handle * lift + group.funcs.length;
 						group.funcs.push(func);
 						return id;
@@ -78,12 +78,13 @@ const purePrint = console.log;
 				if (typeof handle !== 'number') {
 					return;
 				}
-				const groupHandle = Math.round(handle / lift);
+				const groupHandle = Math.floor(handle / lift);
 				const funcIndex = handle % lift;
 				const group = timeoutGroups[groupHandle];
 				if (group === undefined || group.funcs.length - 1 < funcIndex || group.funcs[funcIndex] === null) {
 					return;
 				}
+				cancels++;
 				group.funcs[funcIndex] = null;
 				group.count--;
 				if (group.count === 0) {
@@ -103,9 +104,6 @@ const purePrint = console.log;
 				let idStart = 0;
 
 				const newRIC = (func, options) => {
-					if (options) {
-						console.log(options.timeout);
-					}
 					const id = incId;
 					incId++;
 					icFunctions.push(func);
@@ -140,6 +138,59 @@ const purePrint = console.log;
 					}
 				};
 				window.cancelIdleCallback = newCIC;
+			}
+
+			const patchInterval = false;
+			if (patchInterval) {
+				// rn not caring about interval phase, see if it works
+				const oldSetInterval = window.setInterval;
+				const oldClearInterval = window.clearInterval;
+
+				const intervals = {};
+
+				const newSetInterval = (func, time) => {
+					for (let intervalHandle in intervals) {
+						const interval = intervals[intervalHandle];
+						const ratio = interval.time / time;
+						if (0.8 < ratio && ratio < 1.4) {
+							const id = interval.handle * lift + interval.functions.length;
+							interval.functions.push(func);
+							interval.count++;
+							return id;
+						}
+					}
+					const interval = { time, functions: [func], handle: 0, count: 1 };
+					const runIntervalGroup = () => {
+						let c = 0;
+						for (let func of interval.functions) {
+							if (func) {
+								func();
+								c++;
+							}
+						}
+						if (c > 1) {
+							console.log(`batched ${c} intervals`);
+						}
+					};
+					interval.handle = oldSetInterval(runIntervalGroup, time);
+					intervals[interval.handle] = interval;
+				};
+				window.setInterval = newSetInterval;
+				const newClearInterval = (handle) => {
+					const upper = Math.floor(handle / lift);
+					const lower = handle % lift;
+					const interval = intervals[upper];
+					if (interval) {
+						if (interval.functions[lower]) {
+							interval.functions[lower] = undefined;
+							interval.count--;
+							if (interval.count === 0) {
+								oldClearInterval(interval.handle);
+							}
+						}
+					}
+				};
+				window.clearInterval = newClearInterval;
 			}
 		}
 
